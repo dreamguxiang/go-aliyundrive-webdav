@@ -6,3 +6,10 @@ __debug_bin.exe
 main.exe
 config.toml
 go_aliyun_webdav.exe
+go_aliyun_webdav-darwin-amd64
+go_aliyun_webdav-linux-386
+go_aliyun_webdav-linux-amd64
+go_aliyun_webdav-linux-arm
+go_aliyun_webdav-windows-386.exe
+go_aliyun_webdav-windows-amd64.exe
+go_aliyun_webdav-windows-arm.exe
