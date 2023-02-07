@@ -4,3 +4,5 @@ dist/
 .idea/
 __debug_bin.exe
 main.exe
+config.toml
+go_aliyun_webdav.exe

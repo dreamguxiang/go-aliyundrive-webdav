@@ -2,16 +2,16 @@ package main
 
 import (
 	"context"
-	"flag"
+	"encoding/base64"
+	"encoding/json"
 	"fmt"
+	"github.com/gngpp/vlog"
+	"github.com/pelletier/go-toml"
+	"github.com/tickstep/aliyunpan-api/aliyunpan"
 	"go-aliyun-webdav/aliyun"
 	"go-aliyun-webdav/aliyun/cache"
 	"go-aliyun-webdav/aliyun/model"
 	"go-aliyun-webdav/webdav"
-	"reflect"
-
-	//"gorm.io/driver/sqlite"
-	//"gorm.io/gorm"
 	"net/http"
 	"os"
 	"runtime"
@@ -29,77 +29,119 @@ type Task struct {
 	Id string `json:"id"`
 }
 
-func main() {
-	//GetDb()
-	var port *string
-	var path *string
-	var refreshToken *string
-	var user *string
-	var pwd *string
-	var versin *bool
-	var log *bool
-	var check *string
+type config struct {
+	Connection struct {
+		Port         string
+		Path         string
+		User         string
+		Password     string
+		RefreshToken string
+	}
+	Options struct {
+		ShowDebugLog bool
+		IsMobile     bool
+	}
+}
 
-	//
-	port = flag.String("port", "8085", "默认8085")
-	path = flag.String("path", "./", "")
-	user = flag.String("user", "admin", "用户名")
-	pwd = flag.String("pwd", "123456", "密码")
-	versin = flag.Bool("V", false, "显示版本")
-	log = flag.Bool("v", false, "是否显示日志(默认不显示)")
-	//log = flag.Bool("v", true, "是否显示日志(默认不显示)")
-	refreshToken = flag.String("rt", "", "refresh_token")
-
-	check = flag.String("crt", "", "检查refreshToken是否过期")
-
-	flag.Parse()
-	if *versin {
-		fmt.Println(Version)
-		return
+func getRefreshToken(isMobile bool) string {
+	time.Sleep(time.Second * 1)
+	api := aliyun.NewApi(isMobile)
+	content, err := api.GetGeneratorQrCodeContent()
+	if err != nil {
+		return "null"
 	}
 
-	if len(*check) > 0 {
-		refreshResult := aliyun.RefreshToken(*check)
-		if reflect.DeepEqual(refreshResult, model.RefreshTokenModel{}) {
-
-			fmt.Println("refreshToken已过期")
-		} else {
-			fmt.Println("refreshToken可以使用")
+	q := aliyun.NewQrCode(content.CodeContent, true)
+	q.Print()
+	vlog.Infof("请使用手机扫描二维码登录")
+	qrCodeResult, b := api.GetQueryQrCodeResult()
+	if b {
+		bytess, err := base64.StdEncoding.DecodeString(qrCodeResult.Content.Data.BizExt)
+		if err != nil {
+			return "null"
 		}
+		result := &model.LoginResult{}
+		err = json.Unmarshal(bytess, result)
+		if err != nil {
+			return "null"
+		}
+		return result.PdsLoginResult.RefreshToken
+	}
+	return "null"
+}
+
+func UpdateRefreshToken(new string) {
+	cig, err := readConfig()
+	if err != nil {
 		return
+	}
+	cig.Connection.RefreshToken = new
+	data, err := toml.Marshal(cig)
+	if err != nil {
+		return
+	}
+	if err := os.WriteFile("config.toml", data, 0644); err != nil {
+		return
+	}
+}
+
+func main() {
+	oldcig, err := readConfig()
+	webtoken := aliyun.RefreshToken(oldcig.Connection.RefreshToken)
+	//if reflect.DeepEqual(refreshResult, model.RefreshTokenModel{}) {
+	if webtoken == nil {
+		vlog.Infof("refreshToken已过期,请重新扫描二维码！")
+		refreshToken := getRefreshToken(oldcig.Options.IsMobile)
+		webtoken = aliyun.RefreshToken(refreshToken)
+		UpdateRefreshToken(refreshToken)
 	}
 
-	if len(*refreshToken) == 0 {
-		fmt.Println("rt为必填项,请输入refreshToken")
+	newcig, err := readConfig()
+
+	//GetDb()
+	var port string
+	var path string
+	var user string
+	var pwd string
+	var showlog bool
+
+	if err != nil {
 		return
 	}
-	if len(os.Args) > 2 && os.Args[1] == "rt" {
-		*refreshToken = os.Args[2]
-	}
+	port = newcig.Connection.Port
+	path = newcig.Connection.Path
+	user = newcig.Connection.User
+	pwd = newcig.Connection.Password
+	showlog = newcig.Options.ShowDebugLog
+
+	//check = flag.String("crt", "", "检查refreshToken是否过期")
+
 	var address string
 	if runtime.GOOS == "windows" {
-		address = ":" + *port
+		address = ":" + port
 	} else {
-
-		address = "0.0.0.0:" + *port
+		address = "0.0.0.0:" + port
 	}
-	refreshResult := aliyun.RefreshToken(*refreshToken)
-
-	config := model.Config{
-		RefreshToken: refreshResult.RefreshToken,
-		Token:        refreshResult.AccessToken,
-		DriveId:      refreshResult.DefaultDriveId,
-		ExpireTime:   time.Now().Unix() + refreshResult.ExpiresIn,
+	NewToken := aliyun.RefreshToken(newcig.Connection.RefreshToken)
+	panClient := aliyunpan.NewPanClient(*NewToken, aliyunpan.AppLoginToken{})
+	ui, _ := panClient.GetUserInfo()
+	configs := model.Config{
+		RefreshToken: NewToken.RefreshToken,
+		Token:        NewToken.AccessToken,
+		DriveId:      ui.FileDriveId,
+		ExpireTime:   time.Now().Unix() + int64(NewToken.ExpiresIn),
 	}
 
 	fs := &webdav.Handler{
 		Prefix:     "/",
-		FileSystem: webdav.Dir(*path),
+		FileSystem: webdav.Dir(path),
 		LockSystem: webdav.NewMemLS(),
-		Config:     config,
+		Config:     configs,
 	}
 
-	//fmt.p
+	vlog.Infof("当前用户：%s UserId: %s", ui.UserName, ui.UserId)
+	vlog.Infof("WebDAV服务已启动，地址：http://%s", address)
+	vlog.Infof("用户名：%s", user)
 
 	http.HandleFunc("/", func(w http.ResponseWriter, req *http.Request) {
 		// 获取用户名/密码
@@ -110,7 +152,7 @@ func main() {
 			return
 		}
 		//	 验证用户名/密码
-		if username != *user || password != *pwd {
+		if username != user || password != pwd {
 			http.Error(w, "WebDAV: need authorized!", http.StatusUnauthorized)
 			return
 		}
@@ -133,11 +175,41 @@ func main() {
 				}
 			}
 		}
-		if *log {
+		if showlog {
 			fmt.Println(req.URL)
 			fmt.Println(req.Method)
 		}
 		fs.ServeHTTP(w, req)
+		UpdateRefreshToken(fs.Config.RefreshToken)
 	})
 	http.ListenAndServe(address, nil)
+}
+
+func readConfig() (config, error) {
+	c := config{}
+	c.Connection.Port = "8085"
+	c.Connection.Path = "./"
+	c.Connection.User = "admin"
+	c.Connection.Password = "123456"
+	c.Connection.RefreshToken = "refresh_token"
+	c.Options.ShowDebugLog = false
+	c.Options.IsMobile = true
+	if _, err := os.Stat("config.toml"); os.IsNotExist(err) {
+		data, err := toml.Marshal(c)
+		if err != nil {
+			return c, fmt.Errorf("failed encoding default config: %v", err)
+		}
+		if err := os.WriteFile("config.toml", data, 0644); err != nil {
+			return c, fmt.Errorf("failed creating config: %v", err)
+		}
+		return c, nil
+	}
+	data, err := os.ReadFile("config.toml")
+	if err != nil {
+		return c, fmt.Errorf("error reading config: %v", err)
+	}
+	if err := toml.Unmarshal(data, &c); err != nil {
+		return c, fmt.Errorf("error decoding config: %v", err)
+	}
+	return c, nil
 }

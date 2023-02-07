@@ -2,8 +2,10 @@ package aliyun
 
 import (
 	"encoding/json"
-	"errors"
 	"fmt"
+	"github.com/gngpp/vlog"
+	"github.com/tickstep/aliyunpan-api/aliyunpan"
+	"github.com/tidwall/gjson"
 	"go-aliyun-webdav/aliyun/cache"
 	"go-aliyun-webdav/aliyun/model"
 	"go-aliyun-webdav/aliyun/net"
@@ -11,8 +13,6 @@ import (
 	"net/http"
 	"os"
 	"strconv"
-
-	"github.com/tidwall/gjson"
 )
 
 func GetList(token string, driveId string, parentFileId string, marker ...string) (model.FileListModel, error) {
@@ -123,7 +123,7 @@ func GetFile(w http.ResponseWriter, url string, token string, rangeStr string, i
 	//return []byte{}
 }
 
-func RefreshToken(refreshToken string) model.RefreshTokenModel {
+func RefreshToken(refreshToken string) *aliyunpan.WebLoginToken {
 	path := refreshToken
 	if _, errs := os.Stat(path); errs == nil {
 		buf, _ := ioutil.ReadFile(path)
@@ -132,40 +132,13 @@ func RefreshToken(refreshToken string) model.RefreshTokenModel {
 			refreshToken = refreshToken[:32] // refreshToken is only 32 bit?? FIXME
 		}
 	}
-	rs := net.Post(model.APIREFRESHTOKENURL, "", []byte(`{"refresh_token":"`+refreshToken+`"}`))
-	var refresh model.RefreshTokenModel
-
-	if len(rs) <= 0 {
-		fmt.Println("刷新token失败")
-		return refresh
-	}
-
-	err := json.Unmarshal(rs, &refresh)
+	webToken, err := aliyunpan.GetAccessTokenFromRefreshToken(refreshToken)
 	if err != nil {
-		fmt.Println("刷新token失败,失败信息", err)
-		fmt.Println("刷新token返回信息", refresh)
-		return refresh
+		vlog.Errorf("获取token失败！请重新登录！")
+		return nil
 	}
-
-	if refreshToken == refresh.RefreshToken {
-		return refresh
-	}
-
-	_, err = os.Stat(path)
-	if errors.Is(err, os.ErrNotExist) {
-		return refresh
-	}
-	if err != nil {
-		fmt.Println("更新token文件失败,失败信息", err)
-		return refresh
-	}
-
-	err = ioutil.WriteFile(path, []byte(refresh.RefreshToken), 0600)
-	if err != nil {
-		fmt.Println("更新token文件失败,失败信息", err)
-	}
-
-	return refresh
+	aliyunpan.NewPanClient(*webToken, aliyunpan.AppLoginToken{})
+	return webToken
 }
 
 func RemoveTrash(token string, driveId string, fileId string, parentFileId string) bool {
@@ -359,4 +332,22 @@ func GetBoxSize(token string) (string, string) {
 	body := net.Post(model.APITOTLESIZE, token, data)
 	return gjson.GetBytes(body, "personal_space_info.total_size").String(), gjson.GetBytes(body, "personal_space_info.used_size").String()
 
+}
+
+const GENERATOR_QRCODE_API = "https://passport.aliyundrive.com/newlogin/qrcode/generate.do?appName=aliyun_drive&fromSite=52&appEntrance=web"
+
+const QUERY_API = "https://passport.aliyundrive.com/newlogin/qrcode/query.do?appName=aliyun_drive&fromSite=52&_bx-v=2.0.31"
+
+type GeneratorQrCodeContent struct {
+	Content struct {
+		Data struct {
+			T           int64  `json:"t"`
+			CodeContent string `json:"codeContent"`
+			Ck          string `json:"ck"`
+			ResultCode  int    `json:"resultCode"`
+		} `json:"data"`
+		Status  int  `json:"status"`
+		Success bool `json:"success"`
+	} `json:"content"`
+	HasError bool `json:"hasError"`
 }

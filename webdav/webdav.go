@@ -8,6 +8,7 @@ package webdav // import "golang.org/x/net/webdav"
 import (
 	"errors"
 	"fmt"
+	"github.com/tickstep/aliyunpan-api/aliyunpan"
 	"go-aliyun-webdav/aliyun"
 	"go-aliyun-webdav/aliyun/cache"
 	"go-aliyun-webdav/aliyun/model"
@@ -51,14 +52,17 @@ func (h *Handler) stripPrefix(p string) (string, int, error) {
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	status, err := http.StatusBadRequest, errUnsupportedMethod
 	if h.Config.ExpireTime < time.Now().Unix()-100 {
-		refreshResult := aliyun.RefreshToken(h.Config.RefreshToken)
+		webToken := aliyun.RefreshToken(h.Config.RefreshToken)
+		panClient := aliyunpan.NewPanClient(*webToken, aliyunpan.AppLoginToken{})
+		ui, _ := panClient.GetUserInfo()
 		config := model.Config{
-			RefreshToken: refreshResult.RefreshToken,
-			Token:        refreshResult.AccessToken,
-			DriveId:      refreshResult.DefaultDriveId,
-			ExpireTime:   time.Now().Unix() + refreshResult.ExpiresIn,
+			RefreshToken: webToken.RefreshToken,
+			Token:        webToken.AccessToken,
+			DriveId:      ui.FileDriveId,
+			ExpireTime:   time.Now().Unix() + int64(webToken.ExpiresIn),
 		}
 		h.Config = config
+
 	}
 
 	switch r.Method {
