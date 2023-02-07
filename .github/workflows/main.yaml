@@ -25,7 +25,7 @@ jobs:
           - GOOS: windows
             output: lip.exe
     runs-on: ubuntu-latest
-    steps:
+  steps:
      - name: Set up Go 1.18
      uses: actions/setup-go@v1
      with:
@@ -50,4 +50,5 @@ jobs:
       with:
           name: drone_test
           path: /home/runner/work/drone_test/drone_test
+          
             
